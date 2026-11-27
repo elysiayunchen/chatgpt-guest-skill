@@ -25,7 +25,7 @@ const SKILL_DIR = path.dirname(SCRIPT_DIR);
 const require = createRequire(import.meta.url);
 
 function parseArgs(argv) {
-  const args = { timeoutSec: 120, dryRun: false, headed: false };
+  const args = { timeoutSec: 240, dryRun: false, headed: false };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--prompt-file") args.promptFile = argv[++i];
@@ -34,6 +34,7 @@ function parseArgs(argv) {
     else if (a === "--proxy") args.proxy = argv[++i];
     else if (a === "--dry-run") args.dryRun = true;
     else if (a === "--headed") args.headed = true;
+    else if (a === "--debug-dir") args.debugDir = argv[++i];
     else if (a === "--help") args.help = true;
     else throw new Error(`unknown argument: ${a}`);
   }
@@ -201,46 +202,107 @@ async function main() {
   }
 
   let browser;
-  try {
+  let headedMode = !!args.headed;
+  const launchBrowser = async (headed) => {
     const launchOpts = {
-      headless: !args.headed,
+      headless: !headed,
       args: ["--no-sandbox", "--disable-blink-features=AutomationControlled"],
     };
     // An explicit --proxy (for example a local ur.io TLS bridge) wins. Without
     // one, Chromium inherits this VM's egress proxy, which chatgpt.com resets,
     // so pass --proxy whenever a clean exit is available.
     if (args.proxy) launchOpts.proxy = { server: args.proxy };
-    browser = await pw.chromium.launch(launchOpts);
+    return pw.chromium.launch(launchOpts);
+  };
+  try {
+    browser = await launchBrowser(headedMode);
   } catch (e) {
     writeState({ last_finished_at: Date.now() });
     emit("BROWSER_UNAVAILABLE", { detail: `chromium launch failed: ${String(e).slice(0, 200)}` });
   }
 
+  let debugPage = null;
   const finish = async (status, extra = {}) => {
     const patch = { last_finished_at: Date.now() };
     if (status === "LOGIN_WALL") patch.cooldown_until = Date.now() + LOGIN_WALL_COOLDOWN_SEC * 1000;
     writeState(patch);
+    // Opt-in diagnostics: on failure, keep a screenshot and a DOM census so
+    // the next fix is based on what the page actually was, not on guesses.
+    if (args.debugDir && status !== "OK" && debugPage) {
+      try {
+        fs.mkdirSync(args.debugDir, { recursive: true });
+        await debugPage.screenshot({ path: path.join(args.debugDir, "failure.png") }).catch(() => {});
+        const census = await debugPage.evaluate(() => ({
+          url: location.href,
+          title: document.title,
+          bodyTextHead: (document.body.innerText || "").slice(0, 1200),
+          assistantRoleCount: document.querySelectorAll("[data-message-author-role]").length,
+          testids: [...document.querySelectorAll("[data-testid]")].map((e) => e.getAttribute("data-testid")).filter((v, i, a) => a.indexOf(v) === i).slice(0, 40),
+        })).catch(() => null);
+        fs.writeFileSync(path.join(args.debugDir, "census.json"), JSON.stringify({ status, extra, census }, null, 1));
+      } catch {}
+    }
     try { await browser.close(); } catch {}
     emit(status, extra);
   };
 
-  try {
+  // A realistic context matters more than any single flag: a default
+  // Playwright headless context announces HeadlessChrome in its UA, has no
+  // viewport/screen to speak of and leaves webdriver readable — chatgpt.com
+  // serves a verification interstitial to that shape even from a clean IP,
+  // while the same script headed (e.g. under Xvfb) loads the composer fine.
+  const openGuestPage = async () => {
+    const version = browser.version() || "131.0.0.0";
+    const major = String(version).split(".")[0];
     const context = await browser.newContext({
       locale: "en-US",
+      // Match the timezone to the exit's region when you route through a
+      // regional proxy (set CHATGPT_GUEST_TZ, e.g. Asia/Singapore); an
+      // exit/timezone mismatch is a classic fingerprint inconsistency.
+      ...(process.env.CHATGPT_GUEST_TZ ? { timezoneId: process.env.CHATGPT_GUEST_TZ } : {}),
+      userAgent: `Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Safari/537.36`,
+      viewport: { width: 1280, height: 800 },
+      screen: { width: 1280, height: 800 },
+      deviceScaleFactor: 1,
+      extraHTTPHeaders: { "Accept-Language": "en-US,en;q=0.9" },
       permissions: ["clipboard-read", "clipboard-write"],
     });
     const page = await context.newPage();
     await page.addInitScript(() => {
-      Object.defineProperty(navigator, "webdriver", { get: () => false });
+      Object.defineProperty(navigator, "webdriver", { get: () => undefined });
     });
-
     await page.goto(selectors.url, { waitUntil: "domcontentloaded", timeout: 60000 });
     await page.waitForTimeout(2500);
+    return page;
+  };
+
+  try {
+    let page = await openGuestPage();
+    debugPage = page;
 
     let text = await page.evaluate(() => document.body.innerText || "");
     const title = await page.title();
     if (pageHas(title + "\n" + text, selectors.captchaMarkers)) {
-      return finish("CAPTCHA_REQUIRED", { detail: "verification interstitial on load" });
+      // Headless is the trigger in every observed case. If a display exists
+      // (Xvfb counts), retry exactly once headed before giving up.
+      if (!headedMode && process.env.DISPLAY) {
+        try { await browser.close(); } catch {}
+        headedMode = true;
+        browser = await launchBrowser(true);
+        page = await openGuestPage();
+        debugPage = page;
+        text = await page.evaluate(() => document.body.innerText || "");
+        const title2 = await page.title();
+        if (pageHas(title2 + "\n" + text, selectors.captchaMarkers)) {
+          return finish("CAPTCHA_REQUIRED", { detail: "verification interstitial on load (headed retry also blocked)" });
+        }
+      } else {
+        return finish("CAPTCHA_REQUIRED", {
+          detail: headedMode
+            ? "verification interstitial on load"
+            : "verification interstitial on load in headless mode; rerun headed under a display (e.g. xvfb-run -a ... --headed)",
+        });
+      }
     }
 
     await clickTextIfPresent(page, selectors.stayLoggedOutTexts);
@@ -268,26 +330,67 @@ async function main() {
     else await page.keyboard.press("Enter");
 
     // Completion: stop button gone AND answer text stable for 2.5s.
+    // The answer text is read on every poll, including while the stop button
+    // is visible: an earlier version only read after generation finished, so
+    // a generation that ran past the deadline lost text that was already on
+    // the page. Any assistant-message selector that matches is accepted.
+    const readLastAssistantText = async () => {
+      for (const sel of selectors.assistantMessage) {
+        const msgs = page.locator(sel);
+        const count = await msgs.count().catch(() => 0);
+        if (!count) continue;
+        const t = await msgs.nth(count - 1).innerText().catch(() => "");
+        if (t) return t;
+      }
+      // Fallback for the attribute-free UI variant (observed 2026-11-27):
+      // messages carry no data-message-author-role at all; the conversation
+      // container's innerText is exactly "prompt\n\nanswer\n\ndisclaimer".
+      // The prompt we sent is known verbatim, so subtract it: find the
+      // smallest container whose text starts with the prompt's head, cut
+      // everything up to the prompt's tail, strip the trailing disclaimer.
+      try {
+        return await page.evaluate((p) => {
+          const head = p.slice(0, 60);
+          const tail = p.slice(-40);
+          const root = document.querySelector("main") || document.body;
+          let best = null;
+          root.querySelectorAll("*").forEach((e) => {
+            const t = (e.innerText || "").trim();
+            // Must contain something beyond the prompt itself: the user
+            // bubble alone also starts with the head and is shorter than
+            // the conversation container, so a naive smallest-match picks
+            // the bubble and subtracts to nothing.
+            if (t.startsWith(head) && t.length > p.length + 10) {
+              if (!best || t.length < best.length) best = t;
+            }
+          });
+          if (!best) return "";
+          const idx = best.lastIndexOf(tail);
+          if (idx < 0) return "";
+          let rest = best.slice(idx + tail.length).trim();
+          const cut = rest.indexOf("\nChatGPT is AI");
+          if (cut >= 0) rest = rest.slice(0, cut).trim();
+          return rest;
+        }, prompt);
+      } catch { return ""; }
+    };
     const deadline = Date.now() + args.timeoutSec * 1000;
     let lastText = "";
     let stableSince = Date.now();
     let sawStop = false;
+    let timedOut = false;
     while (Date.now() < deadline) {
       await page.waitForTimeout(1000);
       const stop = await firstVisible(page, selectors.stopButton);
-      if (stop) { sawStop = true; stableSince = Date.now(); continue; }
-      const msgs = page.locator(selectors.assistantMessage[0]);
-      const count = await msgs.count().catch(() => 0);
-      if (!count) { continue; }
-      const current = await msgs.nth(count - 1).innerText().catch(() => "");
-      if (current !== lastText) {
+      const current = await readLastAssistantText();
+      if (current && current !== lastText) {
         lastText = current;
         stableSince = Date.now();
-      } else if (current.length > 0 && Date.now() - stableSince >= 2500) {
-        break;
       }
-      if (Date.now() >= deadline) return finish("STREAM_ERROR", { detail: "answer never settled" });
+      if (stop) { sawStop = true; stableSince = Date.now(); continue; }
+      if (current && Date.now() - stableSince >= 4000) break;
     }
+    if (Date.now() >= deadline) timedOut = true;
     if (!lastText) return finish("STREAM_ERROR", { detail: "no answer text extracted", saw_stop: sawStop });
 
     const fullText = await page.evaluate(() => document.body.innerText || "");
@@ -301,16 +404,22 @@ async function main() {
     // Citations: links inside the last assistant message plus URLs in the text.
     let citations = [];
     try {
-      const msgs = page.locator(selectors.assistantMessage[0]);
-      const last = msgs.nth((await msgs.count()) - 1);
-      citations = await last.evaluate((el) =>
-        [...el.querySelectorAll("a[href]")].map((a) => a.href)
-      );
+      for (const sel of selectors.assistantMessage) {
+        const msgs = page.locator(sel);
+        const count = await msgs.count().catch(() => 0);
+        if (!count) continue;
+        citations = await msgs.nth(count - 1).evaluate((el) =>
+          [...el.querySelectorAll("a[href]")].map((a) => a.href)
+        );
+        if (citations.length) break;
+      }
     } catch {}
     for (const m of lastText.matchAll(/https?:\/\/[^\s)\]]+/g)) citations.push(m[0]);
     citations = [...new Set(citations)].filter((u) => !u.includes("chatgpt.com"));
 
-    return finish("OK", { answer: lastText, citations });
+    return finish("OK", timedOut
+      ? { answer: lastText, citations, detail: "answer captured at timeout; may be truncated" }
+      : { answer: lastText, citations });
   } catch (e) {
     const msg = String(e);
     if (/ERR_TUNNEL|ERR_CONNECTION|ERR_PROXY|ERR_NAME_NOT_RESOLVED/.test(msg)) {

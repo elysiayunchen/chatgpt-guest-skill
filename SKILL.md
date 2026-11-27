@@ -52,6 +52,10 @@
 
 - Prefer the script route for a plain one-shot question by running `node ~/workspace/custom-skills/chatgpt-guest/scripts/ask_guest.mjs --prompt-file <file>` and reading its single JSON result.
 
+- On a headless Linux server the script route must run headed under a virtual display: `xvfb-run -a node .../ask_guest.mjs --prompt-file <file> --headed`. Verified 2026-11-27: plain headless Chromium gets a verification interstitial on load even from a clean proxy exit (curl returns 200), while headed under Xvfb on the same exit loads the composer and completes in ~15–60 seconds per call. When a regional proxy is used, set `CHATGPT_GUEST_TZ` to that region's timezone (for example `Asia/Singapore`) so the context clock matches the exit.
+
+- Pass `--debug-dir <dir>` on a failing run to keep a screenshot and a DOM census of the failure for diagnosis instead of guessing.
+
 - Use the browser route with `browser.browse` on chatgpt.com when the script route returns `BROWSER_UNAVAILABLE` or `CAPTCHA_REQUIRED` during a live session with the user present.
 
 - Run calls strictly one at a time and respect the cooldown the runner reports, never opening parallel guest tabs to speed a task up.

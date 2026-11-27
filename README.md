@@ -56,10 +56,16 @@ Each code maps to one defined fallback in `references/status-codes.md`. The agen
 node scripts/ask_guest.mjs --prompt-file prompt.txt --dry-run
 
 # one real guest call (strictly serial, cooldown enforced)
-node scripts/ask_guest.mjs --prompt-file prompt.txt --timeout 120
+# On a headless Linux server, run it headed under a virtual display —
+# plain headless Chromium is served a verification interstitial on load.
+xvfb-run -a node scripts/ask_guest.mjs --prompt-file prompt.txt --headed
 
-# route through a clean exit, e.g. a local residential bridge
-node scripts/ask_guest.mjs --prompt-file prompt.txt --proxy http://127.0.0.1:8888
+# route through a clean exit, and match the context timezone to its region
+CHATGPT_GUEST_TZ=Asia/Singapore xvfb-run -a node scripts/ask_guest.mjs \
+  --prompt-file prompt.txt --headed --proxy http://127.0.0.1:7890
+
+# on failure, keep a screenshot + DOM census for diagnosis
+node scripts/ask_guest.mjs --prompt-file prompt.txt --headed --debug-dir /tmp/guest-debug
 ```
 
 Prompt templates for the four sanctioned call types live in `references/prompt-templates.md`.
@@ -69,7 +75,7 @@ Prompt templates for the four sanctioned call types live in `references/prompt-t
 Two different kinds of evidence, kept separate on purpose:
 
 - **Local guardrail tests (deterministic):** 5 of 5 passed — dry run, privacy block, serial lock, interval cooldown, login-wall cooldown. These prove the control logic, not the live integration. Details in `references/verification-2026-11-27.md`.
-- **Live integration evidence:** the browser route has completed two real guest sessions end to end — one capability probe, and one real blind-spot review of this repository's own documentation (its findings drove the wording you are reading now). The script route, run from a datacenter VM, is **blocked at the network layer**: the default egress tunnel fails, a cleared-proxy attempt is connection-reset, and an airport exit gets HTTP 403 from chatgpt.com. The runner reports `NETWORK_ERROR` instead of retrying; the script route stays unproven until someone runs it behind a clean exit via `--proxy`.
+- **Live integration evidence:** the browser route has completed real guest sessions end to end, including a blind-spot review of this repository's own documentation. The script route is now also verified end to end — but only in its working shape, found by live diagnosis on 2026-11-27: **headed under a virtual display** (`xvfb-run -a node scripts/ask_guest.mjs --headed --proxy <clean-exit>`), with the context timezone matched to the exit region (`CHATGPT_GUEST_TZ`). In that shape it completes real one-shot questions in ~15–60 s. What does not work, also verified: plain headless Chromium is served a human-verification interstitial on load even from a clean exit, and datacenter egress fails earlier at the network layer (`NETWORK_ERROR`). A second, attribute-free UI variant is handled by an echo-subtraction extraction fallback. Full diagnosis in `references/verification-2026-11-27.md`.
 
 **Guaranteed vs heuristic.** Guaranteed by the code: the serial lock, the 20 s interval, the login-wall cooldown, the privacy pre-scan, and the single-JSON output shape — for example a dry run returns exactly:
 
