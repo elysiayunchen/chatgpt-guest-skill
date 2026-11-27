@@ -1,0 +1,5 @@
+name: "chatgpt_guest"
+title: "ChatGPT Guest Collaboration"
+description: "Use the logged-out web ChatGPT as a low-frequency second opinion and cited web scout, with single-shot prompts, downgraded trust and hard privacy and rate guardrails."
+category: "Work and knowledge"
+include_in_prompt: true
