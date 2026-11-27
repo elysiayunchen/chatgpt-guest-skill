@@ -11,7 +11,7 @@ A guest ChatGPT session has three real advantages:
 - **Heterogeneous perspective.** A different model family catches blind spots your main model shares with itself.
 - **ChatGPT Search with sources.** Guest mode can do a cited first pass over public web information.
 - **No memory of its own.** No account, and no conversation history carried between sessions; every call starts from a clean guest session. (This is a statement about conversational context, not about the provider's server-side retention, which no client can audit.)
-- **Model identity is unknown.** The guest page does not say which model answered. The value on offer is a heterogeneous perspective from a different model family, not a named flagship — and the trust contract is written accordingly.
+- **Guest by design, not by compromise.** A logged-in account used from a cloud browser sits behind exit IPs that keep changing, and repeated logins from shifting IPs are exactly what account risk controls punish. A guest session needs no login at all, so it stays flexible and disposable: one call, one clean session, nothing to protect and nothing to lose. What it returns is a heterogeneous perspective from a different model family — and the trust contract below grades it as a second opinion, never as gospel.
 
 And four hard limits:
 
