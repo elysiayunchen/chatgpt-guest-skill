@@ -1,6 +1,6 @@
 # chatgpt-guest — a Muse skill for collaborating with the logged-out ChatGPT
 
-Use the free, logged-out web ChatGPT as a **second opinion and cited web scout** for your main agent, without giving it your data, your accounts, or your trust.
+Use the free, logged-out web ChatGPT as a **second opinion and cited web scout** for your main agent. It receives only what you deliberately pack into a single prompt, it keeps no account and no history, and its answers never have to be trusted — the contract below obliges the main agent to verify them.
 
 Built for [Muse](https://muse.ai) custom skills. Design input came from a Gemini review of the architecture (brain/hand separation), and every claim below was tested before it was written down.
 
@@ -10,7 +10,8 @@ A guest ChatGPT session has three real advantages:
 
 - **Heterogeneous perspective.** A different model family catches blind spots your main model shares with itself.
 - **ChatGPT Search with sources.** Guest mode can do a cited first pass over public web information.
-- **Zero memory pollution.** No account, no history. Every session starts clean and is discarded.
+- **No memory of its own.** No account, and no conversation history carried between sessions; every call starts from a clean guest session. (This is a statement about conversational context, not about the provider's server-side retention, which no client can audit.)
+- **Model identity is unknown.** The guest page does not say which model answered. The value on offer is a heterogeneous perspective from a different model family, not a named flagship — and the trust contract is written accordingly.
 
 And four hard limits:
 
@@ -36,6 +37,18 @@ Four layers, kept separate on purpose:
 
 Each code maps to one defined fallback in `references/status-codes.md`. The agent never retries blindly and never loops against a CAPTCHA.
 
+## Install
+
+1. Copy this folder into your Muse custom-skills directory (for example `~/workspace/custom-skills/chatgpt-guest/`) so `SKILL.md` and `skill.yaml` are discovered as the `chatgpt_guest` skill.
+2. The **script route** needs Node.js 18+ and Playwright with its Chromium build:
+
+   ```bash
+   npm i playwright            # or set PLAYWRIGHT_MODULE_PATH to an existing install
+   npx playwright install chromium
+   ```
+
+3. The **browser route** needs no local dependencies: the agent opens chatgpt.com with its own browser capability and works as a guest. No selectors are involved on this route — the agent applies the same status vocabulary (`LOGIN_WALL`, `CAPTCHA_REQUIRED`, …) by observation. If your agent has no browser, the script route is the only route.
+
 ## Usage
 
 ```bash
@@ -53,9 +66,18 @@ Prompt templates for the four sanctioned call types live in `references/prompt-t
 
 ## Honest verification status (2026-11-27)
 
-- Local deterministic tests: 5 of 5 passed (dry run, privacy block, serial lock, interval cooldown, login-wall cooldown). Details in `references/verification-2026-11-27.md`.
-- Script route from a datacenter VM: **blocked at the network layer**. The default egress tunnel fails, a cleared-proxy attempt is connection-reset, and an airport exit gets HTTP 403 from chatgpt.com. The runner reports this as `NETWORK_ERROR` instead of retrying. It needs a clean exit via `--proxy`, or a machine whose browser already reaches chatgpt.com.
-- Browser route: **passed end to end**. A guest session completed a packed single-shot prompt in about a minute with no login wall and no CAPTCHA. The page did not disclose which model answered, which is exactly why the trust contract downgrades every answer.
+Two different kinds of evidence, kept separate on purpose:
+
+- **Local guardrail tests (deterministic):** 5 of 5 passed — dry run, privacy block, serial lock, interval cooldown, login-wall cooldown. These prove the control logic, not the live integration. Details in `references/verification-2026-11-27.md`.
+- **Live integration evidence:** the browser route has completed two real guest sessions end to end — one capability probe, and one real blind-spot review of this repository's own documentation (its findings drove the wording you are reading now). The script route, run from a datacenter VM, is **blocked at the network layer**: the default egress tunnel fails, a cleared-proxy attempt is connection-reset, and an airport exit gets HTTP 403 from chatgpt.com. The runner reports `NETWORK_ERROR` instead of retrying; the script route stays unproven until someone runs it behind a clean exit via `--proxy`.
+
+**Guaranteed vs heuristic.** Guaranteed by the code: the serial lock, the 20 s interval, the login-wall cooldown, the privacy pre-scan, and the single-JSON output shape — for example a dry run returns exactly:
+
+```json
+{"status":"DRY_RUN_OK","route":"script","model":null,"answer":null,"citations":[],"session_url":null,"error":"Dry run: prompt passed the privacy pre-scan and would be sent as-is.","meta":{"skill":"chatgpt_guest","version":"0.1.0","duration_ms":3,"prompt_chars":128}}
+```
+
+Heuristic by nature: selector matching against a changing page, completion detection, guest availability from any given network, and citation quality. The status codes exist precisely so those heuristics fail loudly instead of silently.
 
 ## Scope and terms note
 
